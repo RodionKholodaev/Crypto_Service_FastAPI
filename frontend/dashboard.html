@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель управления - Crypto Trading Bot</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header class="dashboard-header">
+            <h1>Панель управления ботами</h1>
+            <div class="user-info">
+                <span id="userName">Привет, Пользователь</span>
+                <button id="logoutBtn" class="btn btn-error">Выйти</button>
+            </div>
+        </header>
+
+        <section class="section">
+            <h2>API ключи биржи</h2>
+            <div class="table-container">
+                <table id="apiKeysTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nickname</th>
+                            <th>Биржа</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="apiKeysBody">
+                        <tr>
+                            <td colspan="4" class="text-center">Загрузка...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="form-box">
+                <h3>Добавить новый ключ</h3>
+                <form id="addApiKeyForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="keyNickname">Nickname</label>
+                            <input type="text" id="keyNickname" name="nickname" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="apiKey">API Key</label>
+                            <input type="text" id="apiKey" name="api_key" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="apiSecret">API Secret</label>
+                            <input type="password" id="apiSecret" name="api_secret" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success">Добавить ключ</button>
+                </form>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Создать нового бота</h2>
+            <form id="createBotForm" class="bot-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="botName">Название бота</label>
+                        <input type="text" id="botName" name="name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="apiKeySelect">API ключ</label>
+                        <select id="apiKeySelect" name="api_key_id" required>
+                            <option value="">Выберите ключ</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="tradingPair">Торговая пара</label>
+                        <input type="text" id="tradingPair" name="trading_pair" placeholder="BTC/USDT:USDT" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Стратегия</label>
+                        <div class="radio-group">
+                            <label><input type="radio" name="strategy" value="long" checked> Long</label>
+                            <label><input type="radio" name="strategy" value="short"> Short</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="leverage">Плечо</label>
+                        <input type="number" id="leverage" name="leverage" min="1" max="100" value="10" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="deposit">Депозит (USDT)</label>
+                        <input type="number" id="deposit" name="deposit" min="10" step="0.01" required>
+                    </div>
+                </div>
+
+                <div class="indicators-section">
+                    <h3>Индикатор RSI</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="rsiTimeframe">Таймфрейм</label>
+                            <select id="rsiTimeframe" name="rsi_timeframe" required>
+                                <option value="1m">1m</option>
+                                <option value="5m">5m</option>
+                                <option value="15m" selected>15m</option>
+                                <option value="1h">1h</option>
+                                <option value="4h">4h</option>
+                                <option value="1d">1d</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="rsiPeriod">Период</label>
+                            <input type="number" id="rsiPeriod" name="rsi_period" value="14" min="1" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="rsiThreshold">Порог</label>
+                            <input type="number" id="rsiThreshold" name="rsi_threshold" value="30" min="0" max="100" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="rsiDirection">Направление</label>
+                            <select id="rsiDirection" name="rsi_direction" required>
+                                <option value="above">Выше порога</option>
+                                <option value="below" selected>Ниже порога</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <h3>Индикатор CCI</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="cciTimeframe">Таймфрейм</label>
+                            <select id="cciTimeframe" name="cci_timeframe" required>
+                                <option value="1m">1m</option>
+                                <option value="5m">5m</option>
+                                <option value="15m" selected>15m</option>
+                                <option value="1h">1h</option>
+                                <option value="4h">4h</option>
+                                <option value="1d">1d</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="cciPeriod">Период</label>
+                            <input type="number" id="cciPeriod" name="cci_period" value="20" min="1" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="cciThreshold">Порог</label>
+                            <input type="number" id="cciThreshold" name="cci_threshold" value="-100" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="cciDirection">Направление</label>
+                            <select id="cciDirection" name="cci_direction" required>
+                                <option value="above" selected>Выше порога</option>
+                                <option value="below">Ниже порога</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="risk-section">
+                    <h3>Управление рисками</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="takeProfit">Take Profit %</label>
+                            <input type="number" id="takeProfit" name="take_profit_percent" value="2.0" step="0.1" min="0.1" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="stopLoss">Stop Loss %</label>
+                            <input type="number" id="stopLoss" name="stop_loss_percent" value="1.0" step="0.1" min="0.1" required>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-success btn-large">Создать и запустить бота</button>
+            </form>
+        </section>
+
+        <section class="section">
+            <h2>Мои боты</h2>
+            <div class="table-container">
+                <table id="botsTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Название</th>
+                            <th>Пара</th>
+                            <th>Статус</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="botsBody">
+                        <tr>
+                            <td colspan="5" class="text-center">Загрузка...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div id="logsModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Логи бота</h2>
+            <pre id="logsContent"></pre>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
