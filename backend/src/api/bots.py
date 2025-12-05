@@ -1,475 +1,329 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
-import logging
+"""
+Добавить в существующий файл backend/src/api/bots.py
+"""
 
-from ..core.database import get_db
-from ..core.security import encrypt_api_key, decrypt_api_key
-from ..models.user import User
-from ..models.api_key import ApiKey
-from ..models.bot import Bot, BotIndicator
-from ..schemas.bot import (
-    ApiKeyCreate, ApiKeyResponse,
-    BotCreate, BotResponse, BotDetailResponse,
-    BotIndicatorCreate
-)
-from ..schemas.auth import ApiResponse
-from ..services.exchange_api import ExchangeAPI
+# Добавить импорты в начало файла:
+from ..services.docker_manager import DockerManager
+import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="", tags=["bots"])
+# Создать экземпляр Docker Manager после создания router:
+docker_manager = DockerManager()
 
 
-# ===== DEPENDENCY =====
-def get_current_user(
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
-) -> User:
-    """
-    Получить текущего пользователя из заголовка Authorization
-    
-    Args:
-        authorization: Bearer токен с user_id
-        db: Сессия базы данных
-        
-    Returns:
-        Объект User
-        
-    Raises:
-        HTTPException: Если пользователь не авторизован или не найден
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        logger.warning("Отсутствует или неверный заголовок Authorization")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Требуется авторизация"
-        )
-    
-    try:
-        user_id = int(authorization.replace("Bearer ", ""))
-    except ValueError:
-        logger.warning(f"Неверный формат user_id в токене: {authorization}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный токен авторизации"
-        )
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        logger.warning(f"Пользователь с id={user_id} не найден")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Пользователь не найден"
-        )
-    
-    logger.info(f"Пользователь {user.username} (id={user.id}) авторизован")
-    return user
+# ========== НОВЫЕ ЭНДПОИНТЫ ==========
 
-
-# ===== API KEYS =====
-@router.post("/api-keys", response_model=ApiResponse)
-async def create_api_key(
-    key_data: ApiKeyCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Создать новый API ключ для биржи
-    
-    Проверяет работоспособность ключей через биржу,
-    шифрует их и сохраняет в базу данных
-    """
-    logger.info(f"Создание API ключа '{key_data.nickname}' для пользователя {current_user.username}")
-    
-    try:
-        # 1. Проверяем что API ключ работает
-        exchange_api = ExchangeAPI(
-            api_key=key_data.api_key,
-            api_secret=key_data.api_secret,
-            exchange_name="bybit"
-        )
-        
-        if not exchange_api.test_connection():
-            logger.warning(f"API ключ '{key_data.nickname}' не прошел проверку")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Неверные API ключи или нет доступа к API биржи"
-            )
-        
-        # 2. Шифруем ключи
-        encrypted_key = encrypt_api_key(key_data.api_key)
-        encrypted_secret = encrypt_api_key(key_data.api_secret)
-        
-        # 3. Создаем запись в БД
-        api_key = ApiKey(
-            user_id=current_user.id,
-            nickname=key_data.nickname,
-            api_key=encrypted_key,
-            api_secret=encrypted_secret,
-            exchange="bybit"
-        )
-        
-        db.add(api_key)
-        db.commit()
-        db.refresh(api_key)
-        
-        logger.info(f"API ключ '{key_data.nickname}' (id={api_key.id}) успешно создан")
-        
-        return ApiResponse(
-            success=True,
-            data={"id": api_key.id, "nickname": api_key.nickname},
-            message="API ключ успешно добавлен"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка при создании API ключа: {e}")
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при создании API ключа: {str(e)}"
-        )
-
-
-@router.get("/api-keys", response_model=ApiResponse)
-async def get_api_keys(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Получить все API ключи текущего пользователя
-    """
-    logger.info(f"Получение API ключей для пользователя {current_user.username}")
-    
-    api_keys = db.query(ApiKey).filter(ApiKey.user_id == current_user.id).all()
-    
-    keys_response = [
-        ApiKeyResponse(
-            id=key.id,
-            nickname=key.nickname,
-            exchange=key.exchange,
-            created_at=key.created_at
-        )
-        for key in api_keys
-    ]
-    
-    logger.info(f"Найдено {len(keys_response)} API ключей")
-    
-    return ApiResponse(
-        success=True,
-        data=keys_response,
-        message=f"Найдено {len(keys_response)} API ключей"
-    )
-
-
-@router.delete("/api-keys/{key_id}", response_model=ApiResponse)
-async def delete_api_key(
-    key_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Удалить API ключ
-    
-    Проверяет что ключ принадлежит пользователю
-    и что нет активных ботов использующих этот ключ
-    """
-    logger.info(f"Удаление API ключа id={key_id} для пользователя {current_user.username}")
-    
-    # 1. Проверяем что ключ принадлежит пользователю
-    api_key = db.query(ApiKey).filter(
-        ApiKey.id == key_id,
-        ApiKey.user_id == current_user.id
-    ).first()
-    
-    if not api_key:
-        logger.warning(f"API ключ id={key_id} не найден или не принадлежит пользователю")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API ключ не найден"
-        )
-    
-    # 2. Проверяем что нет активных ботов
-    active_bots = db.query(Bot).filter(
-        Bot.api_key_id == key_id,
-        Bot.status == "running"
-    ).count()
-    
-    if active_bots > 0:
-        logger.warning(f"Попытка удалить API ключ id={key_id} с {active_bots} активными ботами")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Нельзя удалить API ключ, используется в {active_bots} активных ботах"
-        )
-    
-    # 3. Удаляем ключ
-    try:
-        db.delete(api_key)
-        db.commit()
-        logger.info(f"API ключ id={key_id} успешно удален")
-        
-        return ApiResponse(
-            success=True,
-            data={"id": key_id},
-            message="API ключ успешно удален"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при удалении API ключа: {e}")
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при удалении API ключа: {str(e)}"
-        )
-
-
-# ===== BOTS =====
-@router.post("/bots", response_model=ApiResponse)
-async def create_bot(
-    bot_data: BotCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Создать нового торгового бота
-    
-    Проверяет что API ключ принадлежит пользователю,
-    создает бота и все его индикаторы
-    """
-    logger.info(f"Создание бота '{bot_data.name}' для пользователя {current_user.username}")
-    
-    # 1. Проверяем что api_key принадлежит пользователю
-    api_key = db.query(ApiKey).filter(
-        ApiKey.id == bot_data.api_key_id,
-        ApiKey.user_id == current_user.id
-    ).first()
-    
-    if not api_key:
-        logger.warning(f"API ключ id={bot_data.api_key_id} не найден или не принадлежит пользователю")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API ключ не найден"
-        )
-    
-    try:
-        # 2. Создаем бота
-        bot = Bot(
-            user_id=current_user.id,
-            api_key_id=bot_data.api_key_id,
-            name=bot_data.name,
-            trading_pair=bot_data.trading_pair,
-            strategy=bot_data.strategy,
-            leverage=bot_data.leverage,
-            deposit=bot_data.deposit,
-            take_profit_percent=bot_data.take_profit_percent,
-            stop_loss_percent=bot_data.stop_loss_percent,
-            status="stopped",
-            container_id=None
-        )
-        
-        db.add(bot)
-        db.flush()  # Получаем bot.id
-        
-        # 3. Создаем индикаторы
-        for indicator_data in bot_data.indicators:
-            indicator = BotIndicator(
-                bot_id=bot.id,
-                type=indicator_data.type,
-                timeframe=indicator_data.timeframe,
-                period=indicator_data.period,
-                threshold=indicator_data.threshold,
-                direction=indicator_data.direction
-            )
-            db.add(indicator)
-        
-        db.commit()
-        db.refresh(bot)
-        
-        logger.info(f"Бот '{bot_data.name}' (id={bot.id}) успешно создан с {len(bot_data.indicators)} индикаторами")
-        
-        return ApiResponse(
-            success=True,
-            data={"bot_id": bot.id, "name": bot.name},
-            message="Бот успешно создан"
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка при создании бота: {e}")
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при создании бота: {str(e)}"
-        )
-
-
-@router.get("/bots", response_model=ApiResponse)
-async def get_bots(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Получить все боты текущего пользователя с индикаторами
-    """
-    logger.info(f"Получение ботов для пользователя {current_user.username}")
-    
-    bots = db.query(Bot).filter(
-        Bot.user_id == current_user.id
-    ).options(joinedload(Bot.indicators)).all()
-    
-    bots_response = [
-        BotResponse(
-            id=bot.id,
-            name=bot.name,
-            trading_pair=bot.trading_pair,
-            strategy=bot.strategy,
-            leverage=bot.leverage,
-            deposit=bot.deposit,
-            take_profit_percent=bot.take_profit_percent,
-            stop_loss_percent=bot.stop_loss_percent,
-            status=bot.status,
-            container_id=bot.container_id,
-            created_at=bot.created_at,
-            indicators=[
-                {
-                    "id": ind.id,
-                    "type": ind.type,
-                    "timeframe": ind.timeframe,
-                    "period": ind.period,
-                    "threshold": ind.threshold,
-                    "direction": ind.direction
-                }
-                for ind in bot.indicators
-            ]
-        )
-        for bot in bots
-    ]
-    
-    logger.info(f"Найдено {len(bots_response)} ботов")
-    
-    return ApiResponse(
-        success=True,
-        data=bots_response,
-        message=f"Найдено {len(bots_response)} ботов"
-    )
-
-
-@router.get("/bots/{bot_id}", response_model=ApiResponse)
-async def get_bot(
+@router.post("/{bot_id}/start", response_model=ApiResponse)
+async def start_bot(
     bot_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Получить детальную информацию о боте включая индикаторы и API ключ
+    Запустить бота в Docker контейнере
+    
+    Действия:
+    1. Проверка прав доступа
+    2. Получение и расшифровка API ключей
+    3. Сборка конфигурации с индикаторами
+    4. Запуск контейнера через Docker Manager
+    5. Обновление статуса в БД
     """
-    logger.info(f"Получение бота id={bot_id} для пользователя {current_user.username}")
-    
-    bot = db.query(Bot).filter(
-        Bot.id == bot_id,
-        Bot.user_id == current_user.id
-    ).options(
-        joinedload(Bot.indicators),
-        joinedload(Bot.api_key)
-    ).first()
-    
-    if not bot:
-        logger.warning(f"Бот id={bot_id} не найден или не принадлежит пользователю")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Бот не найден"
-        )
-    
-    bot_response = BotDetailResponse(
-        id=bot.id,
-        name=bot.name,
-        trading_pair=bot.trading_pair,
-        strategy=bot.strategy,
-        leverage=bot.leverage,
-        deposit=bot.deposit,
-        take_profit_percent=bot.take_profit_percent,
-        stop_loss_percent=bot.stop_loss_percent,
-        status=bot.status,
-        container_id=bot.container_id,
-        created_at=bot.created_at,
-        api_key=ApiKeyResponse(
-            id=bot.api_key.id,
-            nickname=bot.api_key.nickname,
-            exchange=bot.api_key.exchange,
-            created_at=bot.api_key.created_at
-        ),
-        indicators=[
+    try:
+        # Получить бота и проверить владельца
+        bot = db.query(Bot).filter(
+            Bot.id == bot_id,
+            Bot.user_id == current_user.id
+        ).first()
+        
+        if not bot:
+            return ApiResponse(
+                success=False,
+                error="Бот не найден или у вас нет прав доступа"
+            )
+        
+        # Проверка что бот не запущен
+        if bot.status == "running":
+            return ApiResponse(
+                success=False,
+                error="Бот уже запущен"
+            )
+        
+        # Получить API ключ и расшифровать
+        api_key_obj = db.query(ApiKey).filter(
+            ApiKey.id == bot.api_key_id,
+            ApiKey.user_id == current_user.id
+        ).first()
+        
+        if not api_key_obj:
+            return ApiResponse(
+                success=False,
+                error="API ключ не найден"
+            )
+        
+        # Расшифровка ключей
+        try:
+            decrypted_key = decrypt_api_key(api_key_obj.api_key)
+            decrypted_secret = decrypt_api_key(api_key_obj.api_secret)
+        except Exception as e:
+            logger.error(f"Ошибка расшифровки API ключей: {e}")
+            return ApiResponse(
+                success=False,
+                error="Ошибка расшифровки API ключей"
+            )
+        
+        # Получить все индикаторы бота
+        indicators = db.query(BotIndicator).filter(
+            BotIndicator.bot_id == bot_id
+        ).all()
+        
+        indicators_list = [
             {
-                "id": ind.id,
-                "type": ind.type,
-                "timeframe": ind.timeframe,
+                "type": ind.indicator_type,
                 "period": ind.period,
-                "threshold": ind.threshold,
-                "direction": ind.direction
+                "value": ind.value,
+                "condition": ind.condition
             }
-            for ind in bot.indicators
+            for ind in indicators
         ]
-    )
-    
-    logger.info(f"Бот id={bot_id} успешно получен")
-    
-    return ApiResponse(
-        success=True,
-        data=bot_response,
-        message="Бот найден"
-    )
+        
+        # Собрать конфигурацию бота
+        bot_config = {
+            "trading_pair": bot.trading_pair,
+            "strategy": bot.strategy,
+            "leverage": bot.leverage,
+            "deposit": float(bot.deposit),
+            "take_profit_percent": float(bot.take_profit_percent),
+            "stop_loss_percent": float(bot.stop_loss_percent),
+            "indicators": indicators_list,
+            "exchange": api_key_obj.exchange
+        }
+        
+        # Запустить контейнер через Docker Manager
+        container_id, error = docker_manager.start_bot_container(
+            bot_id=bot_id,
+            bot_config=bot_config,
+            api_key=decrypted_key,
+            api_secret=decrypted_secret
+        )
+        
+        if error:
+            logger.error(f"Ошибка запуска контейнера для бота {bot_id}: {error}")
+            return ApiResponse(
+                success=False,
+                error=f"Ошибка запуска контейнера: {error}"
+            )
+        
+        # Обновить статус и container_id в БД
+        bot.status = "running"
+        bot.container_id = container_id
+        db.commit()
+        
+        logger.info(f"Бот {bot_id} успешно запущен. Container ID: {container_id}")
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "bot_id": bot_id,
+                "container_id": container_id,
+                "status": "running"
+            }
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Неожиданная ошибка при запуске бота {bot_id}: {e}")
+        return ApiResponse(
+            success=False,
+            error=f"Внутренняя ошибка сервера: {str(e)}"
+        )
 
 
-@router.delete("/bots/{bot_id}", response_model=ApiResponse)
-async def delete_bot(
+@router.post("/{bot_id}/stop", response_model=ApiResponse)
+async def stop_bot(
     bot_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Удалить бота
+    Остановить Docker контейнер бота
     
-    Проверяет что бот принадлежит пользователю
-    и что бот остановлен
+    Действия:
+    1. Проверка прав и статуса
+    2. Остановка и удаление контейнера
+    3. Обновление статуса в БД
     """
-    logger.info(f"Удаление бота id={bot_id} для пользователя {current_user.username}")
-    
-    # 1. Проверяем что бот принадлежит пользователю
-    bot = db.query(Bot).filter(
-        Bot.id == bot_id,
-        Bot.user_id == current_user.id
-    ).first()
-    
-    if not bot:
-        logger.warning(f"Бот id={bot_id} не найден или не принадлежит пользователю")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Бот не найден"
-        )
-    
-    # 2. Проверяем что бот остановлен
-    if bot.status == "running":
-        logger.warning(f"Попытка удалить запущенного бота id={bot_id}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Сначала остановите бота"
-        )
-    
-    # 3. Удаляем бота (cascade удалит indicators)
     try:
-        db.delete(bot)
+        # Получить бота и проверить владельца
+        bot = db.query(Bot).filter(
+            Bot.id == bot_id,
+            Bot.user_id == current_user.id
+        ).first()
+        
+        if not bot:
+            return ApiResponse(
+                success=False,
+                error="Бот не найден или у вас нет прав доступа"
+            )
+        
+        # Проверка что бот запущен
+        if bot.status != "running":
+            return ApiResponse(
+                success=False,
+                error="Бот не запущен"
+            )
+        
+        if not bot.container_id:
+            return ApiResponse(
+                success=False,
+                error="У бота отсутствует ID контейнера"
+            )
+        
+        # Остановить контейнер через Docker Manager
+        success = docker_manager.stop_bot_container(bot.container_id)
+        
+        if not success:
+            logger.error(f"Не удалось остановить контейнер {bot.container_id}")
+            return ApiResponse(
+                success=False,
+                error="Ошибка остановки контейнера. Попробуйте позже."
+            )
+        
+        # Обновить статус в БД
+        bot.status = "stopped"
+        bot.container_id = None
         db.commit()
-        logger.info(f"Бот id={bot_id} успешно удален")
+        
+        logger.info(f"Бот {bot_id} успешно остановлен")
         
         return ApiResponse(
             success=True,
-            data={"id": bot_id},
-            message="Бот успешно удален"
+            data={
+                "bot_id": bot_id,
+                "status": "stopped"
+            }
         )
+        
     except Exception as e:
-        logger.error(f"Ошибка при удалении бота: {e}")
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при удалении бота: {str(e)}"
+        logger.error(f"Неожиданная ошибка при остановке бота {bot_id}: {e}")
+        return ApiResponse(
+            success=False,
+            error=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@router.get("/{bot_id}/logs", response_model=ApiResponse)
+async def get_bot_logs(
+    bot_id: int,
+    tail: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Получить логи контейнера бота
+    
+    Query параметры:
+    - tail: количество последних строк (по умолчанию 50, макс 500)
+    """
+    try:
+        # Ограничение максимального количества строк
+        if tail > 500:
+            tail = 500
+        
+        # Получить бота и проверить владельца
+        bot = db.query(Bot).filter(
+            Bot.id == bot_id,
+            Bot.user_id == current_user.id
+        ).first()
+        
+        if not bot:
+            return ApiResponse(
+                success=False,
+                error="Бот не найден или у вас нет прав доступа"
+            )
+        
+        # Проверка наличия container_id
+        if not bot.container_id:
+            return ApiResponse(
+                success=False,
+                error="Бот не запущен или контейнер был удален"
+            )
+        
+        # Получить логи через Docker Manager
+        logs = docker_manager.get_container_logs(bot.container_id, tail=tail)
+        
+        if logs is None:
+            return ApiResponse(
+                success=False,
+                error="Контейнер не найден. Возможно бот был остановлен."
+            )
+        
+        # Проверка актуального статуса контейнера
+        is_running = docker_manager.is_container_running(bot.container_id)
+        
+        # Синхронизация статуса если контейнер не запущен
+        if not is_running and bot.status == "running":
+            bot.status = "stopped"
+            bot.container_id = None
+            db.commit()
+            logger.warning(f"Бот {bot_id} был помечен как running, но контейнер не найден. Статус обновлен.")
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "bot_id": bot_id,
+                "logs": logs,
+                "lines_count": len(logs.split('\n')) if logs else 0,
+                "is_running": is_running
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении логов бота {bot_id}: {e}")
+        return ApiResponse(
+            success=False,
+            error=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+# Опционально: эндпоинт для получения статистики ресурсов
+@router.get("/{bot_id}/stats", response_model=ApiResponse)
+async def get_bot_stats(
+    bot_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получить статистику использования ресурсов контейнера"""
+    try:
+        bot = db.query(Bot).filter(
+            Bot.id == bot_id,
+            Bot.user_id == current_user.id
+        ).first()
+        
+        if not bot or not bot.container_id:
+            return ApiResponse(
+                success=False,
+                error="Бот не найден или не запущен"
+            )
+        
+        stats = docker_manager.get_container_stats(bot.container_id)
+        
+        if not stats:
+            return ApiResponse(
+                success=False,
+                error="Не удалось получить статистику"
+            )
+        
+        return ApiResponse(
+            success=True,
+            data=stats
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        return ApiResponse(
+            success=False,
+            error=str(e)
         )
