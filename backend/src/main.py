@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth
+from .api import bots
 
 app = FastAPI(
     title="Trading Bot Manager API",
@@ -23,7 +24,7 @@ app.add_middleware(
 
 # Подключаем роутеры
 app.include_router(auth.router)
-
+app.include_router(bots.router) 
 
 @app.get("/")
 async def root():
